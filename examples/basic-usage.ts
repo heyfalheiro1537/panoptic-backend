@@ -1,138 +1,120 @@
-import { BillableSDK } from '../src/SDK/sdk';
-import { Providers } from '../src/types/providers';
+/**
+ * Panoptic SDK - Basic Usage Examples
+ * 
+ * The SDK's primary purpose is wrapping functions to track billing/usage.
+ * Each wrapped function automatically logs events to Grafana Loki.
+ */
 
-// Initialize SDK with username (required for MongoDB collection routing)
-const sdk = new BillableSDK({
-    username: 'john_doe',
-    project: 'my-project',
-    env: 'development'
+import { createSDK } from '../src/SDK/sdk';
+import { 
+    Providers, 
+    OpenAIServices, 
+    AwsServices, 
+    GoogleServices 
+} from '../src/types/providers';
+
+// ─────────────────────────────────────────────────────────────
+// 1. Create SDK instance
+// ─────────────────────────────────────────────────────────────
+
+const sdk = createSDK({
+    project: 'ecommerce-app',
+    env: 'development',
 });
 
-// ============================================
-// Example 1: Named function - auto-captures 'calculatePrice'
-// ============================================
-function calculatePrice(items: number, pricePerItem: number): number {
-    return items * pricePerItem;
+// ─────────────────────────────────────────────────────────────
+// 2. Wrap functions - the primary API
+// ─────────────────────────────────────────────────────────────
+
+// OpenAI - AI inference
+async function generateText(prompt: string): Promise<string> {
+    await new Promise(r => setTimeout(r, 100));
+    return `Response to: ${prompt}`;
 }
 
-const wrappedCalculate = sdk.wrap(calculatePrice, {
+const trackedGenerate = sdk.wrapAsync(generateText, {
+    provider: Providers.OPENAI,
+    service: OpenAIServices.GPT4o,
+    tags: ['ai', 'generation'],
+});
+
+// AWS S3 - Storage
+function uploadFile(bucket: string, key: string): { url: string } {
+    return { url: `s3://${bucket}/${key}` };
+}
+
+const trackedUpload = sdk.wrap(uploadFile, {
+    provider: Providers.AWS,
+    service: AwsServices.S3,
+});
+
+// Google BigQuery - Analytics
+async function runQuery(sql: string): Promise<{ rows: number }> {
+    await new Promise(r => setTimeout(r, 150));
+    return { rows: 42 };
+}
+
+const trackedQuery = sdk.wrapAsync(runQuery, {
+    provider: Providers.GOOGLE,
+    service: GoogleServices.BIGQUERY,
+});
+
+// Custom business logic
+function calculateTotal(items: number[]): number {
+    return items.reduce((a, b) => a + b, 0);
+}
+
+const trackedCalculate = sdk.wrap(calculateTotal, {
     provider: Providers.USER_DEFINED,
-    service: 'PricingService'
+    service: 'OrderService',
+    resource: 'calculate-total',
 });
 
-console.log('Example 1 - Named function:');
-console.log('Total:', wrappedCalculate(5, 10));
-// MongoDB: resource: 'calculatePrice', metadata.function_name: 'calculatePrice'
-// Collection: user_defined_john_doe
+// ─────────────────────────────────────────────────────────────
+// 3. Advanced: Get logger for custom events
+// ─────────────────────────────────────────────────────────────
 
-// ============================================
-// Example 2: Arrow function - auto-captures variable name
-// ============================================
-const processOrder = (orderId: string) => {
-    console.log('Processing order:', orderId);
-    return { status: 'completed', orderId };
-};
+const openaiLogger = sdk.getLogger(Providers.OPENAI, OpenAIServices.GPT4o);
 
-const wrappedProcess = sdk.wrap(processOrder, {
-    provider: Providers.USER_DEFINED,
-    service: 'OrderService'
-});
-
-console.log('\nExample 2 - Arrow function:');
-console.log(wrappedProcess('ORDER-123'));
-// MongoDB: resource: 'processOrder'
-
-// ============================================
-// Example 3: Anonymous function - uses fallback 'anonymous'
-// ============================================
-const wrappedAnon = sdk.wrap(() => {
-    return 'done';
-}, {
-    provider: Providers.USER_DEFINED
-});
-
-console.log('\nExample 3 - Anonymous function:');
-console.log(wrappedAnon());
-// MongoDB: resource: 'anonymous'
-
-// ============================================
-// Example 4: Override with custom resource name
-// ============================================
-const wrappedCustom = sdk.wrap(calculatePrice, {
-    provider: Providers.USER_DEFINED,
-    resource: 'custom-price-calculation'  // Overrides fn.name
-});
-
-console.log('\nExample 4 - Custom resource name:');
-console.log('Total:', wrappedCustom(3, 7));
-// MongoDB: resource: 'custom-price-calculation'
-
-// ============================================
-// Example 5: Create dedicated logger for multiple functions
-// ============================================
-const gcpLogger = sdk.createLogger(Providers.GOOGLE, 'BigQuery');
-
-function runQuery1(sql: string) {
-    console.log('Running query 1:', sql);
-    return { rows: 100 };
+function logTokenUsage(prompt: number, completion: number) {
+    openaiLogger.token_usage({
+        promptTokens: prompt,
+        completionTokens: completion,
+        totalTokens: prompt + completion,
+    });
 }
 
-function runQuery2(sql: string) {
-    console.log('Running query 2:', sql);
-    return { rows: 50 };
+// ─────────────────────────────────────────────────────────────
+// Run examples
+// ─────────────────────────────────────────────────────────────
+
+async function main() {
+    console.log('\n🚀 Panoptic SDK Examples\n');
+
+    // Use wrapped functions normally - billing is automatic
+    console.log('1. OpenAI:');
+    const text = await trackedGenerate('Hello world');
+    console.log(`   → ${text}`);
+
+    console.log('\n2. AWS S3:');
+    const upload = trackedUpload('my-bucket', 'file.txt');
+    console.log(`   → ${upload.url}`);
+
+    console.log('\n3. BigQuery:');
+    const query = await trackedQuery('SELECT * FROM users');
+    console.log(`   → ${query.rows} rows`);
+
+    console.log('\n4. Custom:');
+    const total = trackedCalculate([10, 20, 30]);
+    console.log(`   → Total: ${total}`);
+
+    console.log('\n5. Direct logger:');
+    logTokenUsage(100, 250);
+    console.log('   → Logged token usage');
+
+    console.log('\n✅ Done! Check Grafana Loki:\n');
+    console.log('   {app="panoptic", provider="OpenAI"}');
+    console.log('   {app="panoptic", env="development"} | json\n');
 }
 
-const wrapped1 = sdk.wrap(runQuery1, { logger: gcpLogger });
-const wrapped2 = sdk.wrap(runQuery2, { logger: gcpLogger });
-
-console.log('\nExample 5 - Shared logger for multiple functions:');
-console.log(wrapped1('SELECT * FROM users'));
-console.log(wrapped2('SELECT * FROM orders'));
-// Both will log to same collection: google_cloud_gcp_john_doe
-
-// ============================================
-// Example 6: Async function wrapping
-// ============================================
-async function fetchUserData(userId: string): Promise<{ id: string; name: string }> {
-    // Simulate async operation
-    await new Promise(resolve => setTimeout(resolve, 100));
-    return { id: userId, name: 'John Doe' };
-}
-
-const wrappedFetch = sdk.wrapAsync(fetchUserData, {
-    provider: Providers.USER_DEFINED,
-    service: 'UserService'
-});
-
-async function runAsyncExample() {
-    console.log('\nExample 6 - Async function:');
-    const user = await wrappedFetch('user-123');
-    console.log('User:', user);
-}
-
-runAsyncExample().catch(console.error);
-
-// ============================================
-// Example 7: Different providers route to different collections
-// ============================================
-const awsLogger = sdk.createLogger(Providers.AWS, 'S3');
-const openaiLogger = sdk.createLogger(Providers.OPENAI, 'GPT-4');
-
-function uploadFile(bucket: string, key: string) {
-    return { bucket, key, uploaded: true };
-}
-
-function generateText(prompt: string) {
-    return { text: 'Generated response for: ' + prompt };
-}
-
-const wrappedUpload = sdk.wrap(uploadFile, { logger: awsLogger });
-const wrappedGenerate = sdk.wrap(generateText, { logger: openaiLogger });
-
-console.log('\nExample 7 - Multiple providers:');
-console.log(wrappedUpload('my-bucket', 'file.txt'));
-// Logs to: panoptic-development.aws_john_doe
-
-console.log(wrappedGenerate('Hello world'));
-// Logs to: panoptic-development.openai_john_doe
-
+main().catch(console.error);

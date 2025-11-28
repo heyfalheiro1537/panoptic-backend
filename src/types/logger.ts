@@ -1,14 +1,11 @@
-import pino from 'pino';
+import 'dotenv/config';
+import winston from 'winston';
+import LokiTransport from 'winston-loki';
 import { Providers } from './providers';
 import { config } from '../config/env';
-import path from 'path';
 
-/**
- * Context for creating provider-specific child loggers
- */
 export interface ProviderLoggerContext {
     provider: Providers;
-    username: string;
     projectId?: string;
     env?: string;
     service?: string;
@@ -16,72 +13,95 @@ export interface ProviderLoggerContext {
 
 // Custom log levels for billing events
 const customLevels = {
-    charge: 34,
-    billing: 35,
-    quota: 37,
-    token_usage: 38,
-    invoice: 39,
-} as const;
-
-type CustomLevelNames = keyof typeof customLevels;
-
-// Custom logger type with billing-specific methods
-export type BillingLogger = pino.Logger<CustomLevelNames> & {
-    charge: pino.LogFn;
-    billing: pino.LogFn;
-    quota: pino.LogFn;
-    token_usage: pino.LogFn;
-    invoice: pino.LogFn;
-};
-
-// Transport configuration - use absolute path for the custom transport
-const transportConfig = {
-    target: path.join(__dirname, 'transporter', 'mongoDB.js'),
-    level: 'info' as const,
-    options: {
-        uri: config.mongodb.uri,
+    levels: {
+        error: 0,
+        warn: 1,
+        info: 2,
+        http: 3,
+        verbose: 4,
+        debug: 5,
+        silly: 6,
+        charge: 7,
+        billing: 8,
+        quota: 9,
+        token_usage: 10,
+        invoice: 11,
+    },
+    colors: {
+        error: 'red',
+        warn: 'yellow',
+        info: 'green',
+        http: 'magenta',
+        verbose: 'cyan',
+        debug: 'blue',
+        silly: 'grey',
+        charge: 'green bold',
+        billing: 'cyan bold',
+        quota: 'yellow bold',
+        token_usage: 'magenta bold',
+        invoice: 'blue bold',
     }
 };
 
-/**
- * Base logger - PRIVATE, not exported
- * All logging should go through child loggers created via createProviderLogger
- */
-const baseLogger = pino({
-    level: config.logging.level,
-    customLevels,
-    transport: transportConfig,
-});
+// Add custom colors
+winston.addColors(customLevels.colors);
 
-/**
- * Create a provider-specific child logger with automatic context propagation
- * 
- * The context (provider, username, env, etc.) is automatically included in ALL logs
- * from this child logger. The MongoDB transport reads this context to route logs
- * to the correct database and collection.
- * 
- * @param context - Provider logger context including provider, username, etc.
- * @returns A pino child logger with the context bound
- * 
- * @example
- * const logger = createProviderLogger({
- *     provider: Providers.GOOGLE,
- *     username: 'john_doe',
- *     projectId: 'my-project',
- *     env: 'production',
- *     service: 'BigQuery'
- * });
- * 
- * // All logs from this logger will include the context
- * logger.invoice({ resource: 'queryJob', amount: 0.05 });
- * // Logs to: panoptic-production database, gcp_john_doe collection
- */
+// Custom logger type with billing-specific methods
+export interface BillingLogger extends winston.Logger {
+    info: winston.LeveledLogMethod;
+    error: winston.LeveledLogMethod;
+    warn: winston.LeveledLogMethod;
+    debug: winston.LeveledLogMethod;
+    verbose: winston.LeveledLogMethod;
+    silly: winston.LeveledLogMethod;
+    charge: winston.LeveledLogMethod;
+    billing: winston.LeveledLogMethod;
+    quota: winston.LeveledLogMethod;
+    token_usage: winston.LeveledLogMethod;
+    invoice: winston.LeveledLogMethod;
+}
+
+
 export function createProviderLogger(context: ProviderLoggerContext): BillingLogger {
-    return baseLogger.child({
-        provider: context.provider,
-        username: context.username,
-        projectId: context.projectId,
-        env: context.env || process.env.NODE_ENV || 'development',
-        service: context.service,
+    const env = context.env || config.env;
+    
+    const transports: winston.transport[] = [
+        new LokiTransport({
+            host: process.env.LOKI_HOST as string,
+            labels: { 
+                app: config.appName,
+                provider: context.provider,
+                env: env,
+            },
+            json: true,
+            basicAuth: `${process.env.LOKI_USER}:${process.env.LOKI_API_KEY}`,
+            format: winston.format.json(),
+            replaceTimestamp: true,
+            onConnectionError: (err) => console.error(err),
+        })
+    ];
+
+    // Add console transport in non-production
+    if (config.env !== 'production') {
+        transports.push(new winston.transports.Console({
+            format: winston.format.combine(
+                winston.format.colorize(),
+                winston.format.simple()
+            )
+        }));
+    }
+
+    return winston.createLogger({
+        levels: customLevels.levels,
+        level: "invoice",
+        format: winston.format.combine(
+            winston.format.timestamp(),
+            winston.format.json()
+        ),
+        defaultMeta: {
+            projectId: context.projectId,
+            service: context.service,
+        },
+        transports,
     }) as BillingLogger;
 }

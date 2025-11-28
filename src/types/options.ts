@@ -1,7 +1,6 @@
-export interface BillableOptions {
-    apiKey?: string;
+export interface SDKConfig {
+    /** Project identifier */
     project?: string;
-    username: string;  // Required - used for MongoDB collection routing
+    /** Environment (defaults to NODE_ENV or 'development') */
     env?: 'production' | 'development' | 'staging';
-    autoConnect?: boolean;
 }
