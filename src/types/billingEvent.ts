@@ -1,63 +1,56 @@
 import { Providers, ProviderServicesMap, ProvidersType } from "./providers";
 
 /**
- * BaseBillingEvent describes the structure of a usage or billing event.
+ * Common attribution-related metadata fields.
+ *
+ * These are never required, but when present they allow you to
+ * break down costs by endpoint, tenant, user, feature, etc.
+ *
+ * All of these live under BillingEvent.metadata.* rather than as
+ * separate top-level fields.
  */
+export interface AttributionMetadata {
+    /** Logical endpoint or operation, e.g. "POST /api/users" */
+    endpoint?: string;
+    /** HTTP method when applicable, e.g. "GET", "POST" */
+    http_method?: string;
+    /** Multi-tenant identifier, e.g. customer/organization ID */
+    tenant_id?: string;
+    /** End-user identifier when available */
+    user_id?: string;
+    /** Business feature or flow name, e.g. "checkout", "bulk-import" */
+    feature?: string;
+    /** Subscription / pricing tier information */
+    subscription_tier?: string;
+    /** Region or logical location, e.g. "us-east-1" */
+    region?: string;
+    /** Correlation / tracing identifiers */
+    trace_id?: string;
+    request_id?: string;
+}
+
+/**
+ * Generic metadata bag for billing events.
+ *
+ * It is a free-form object, but we document some common, typed
+ * fields for better tooling and reuse.
+ */
+
+export type BillingMetadata = Record<string, any> & Partial<AttributionMetadata>;
+
 interface BaseBillingEvent {
-    /**
-     * ISO-formatted timestamp of when the event occurred.
-     */
     ts: string;
-
-    /**
-     * Optional project ID (typically the customer or workspace identifier).
-     */
     projectId?: string;
-
-    /**
-     * Optional environment name (such as 'development', 'production').
-     */
     env?: string;
-
-    /**
-     * Category of provider: e.g. AI, INFRA, based on ProvidersType enum.
-     */
     category: ProvidersType;
-
-    /**
-     * The provider in use (e.g. OPENAI, AWS), based on Providers enum.
-     */
     provider: Providers;
-
-    /**
-     * Optional resource operated on (e.g. function name, API endpoint).
-     */
     resource?: string;
-
-    /**
-     * Optional quantity used in the billing event (e.g. number of executions, tokens).
-     */
+    /** Optional manual billing values, mainly for custom events */
     quantity?: number;
-
-    /**
-     * Optional unit for the quantity (e.g. 'execution', 'token', 'GB').
-     */
-    unit?: string; 
-
-    /**
-     * Optional amount charged or cost of the event (usually in the specified currency).
-     */
+    unit?: string;
     amount?: number;
-
-    /**
-     * Optional currency code for the amount (e.g. 'USD').
-     */
     currency?: string;
-
-    /**
-     * Optional metadata map for any additional data (duration, user, requestId, tags, etc).
-     */
-    metadata?: Record<string, any>;
+    metadata?: BillingMetadata;
 }
 
 
@@ -65,3 +58,5 @@ export type BillingEvent<P extends Providers = Providers> = BaseBillingEvent & {
     provider: P;
     service?: ProviderServicesMap[P];
 };
+
+

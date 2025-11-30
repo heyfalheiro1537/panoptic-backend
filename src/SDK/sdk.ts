@@ -2,6 +2,7 @@ import { createProviderLogger, BillingLogger } from '../types/logger';
 import { BillingEvent } from '../types/billingEvent';
 import { Providers, ProvidersType } from '../types/providers';
 import { SDKConfig } from '../types/options';
+import { getExecutionMetadata } from '../context/executionContext';
 
 
 // ─────────────────────────────────────────────────────────────
@@ -12,8 +13,22 @@ export interface WrapOptions {
     provider: Providers;
     service?: string;
     resource?: string;
+    /**
+     * Optional request identifier for correlation.
+     * For HTTP calls this might come from a header such as X-Request-Id.
+     */
     requestId?: string;
+    /**
+     * Arbitrary tags that will be attached to the event metadata.
+     */
     tags?: string[];
+    /**
+     * Optional extra attribution/metadata fields that should be merged
+     * into BillingEvent.metadata. This is a convenient escape hatch
+     * for callers who want to attach tenant/user/feature information
+     * without relying on AsyncLocalStorage helpers.
+     */
+    attributes?: Record<string, string | number | boolean>;
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -60,6 +75,24 @@ export function createSDK(config: SDKConfig = {}) {
         resource: string,
         duration: number
     ): BillingEvent {
+        const executionMeta = getExecutionMetadata() || {};
+
+        const baseMeta = {
+            function_name: resource,
+            duration_ms: duration,
+            request_id: options.requestId,
+            tags: options.tags,
+        };
+
+        // Precedence: execution metadata (from AsyncLocalStorage),
+        // then per-call attributes, and finally base fields to ensure
+        // core keys like function_name/duration_ms are always present.
+        const mergedMetadata = {
+            ...executionMeta,
+            ...(options.attributes || {}),
+            ...baseMeta,
+        };
+
         return {
             ts: new Date().toISOString(),
             projectId: project,
@@ -70,15 +103,10 @@ export function createSDK(config: SDKConfig = {}) {
             resource,
             // placeholder for manual billing events
             // quantity: 1,
-            // unit: 'execution', 
+            // unit: 'execution',
             // amount: 0,
             // currency: 'USD',
-            metadata: {
-                function_name: resource,
-                duration_ms: duration,
-                requestId: options.requestId,
-                tags: options.tags,
-            },
+            metadata: mergedMetadata,
         };
     }
 
