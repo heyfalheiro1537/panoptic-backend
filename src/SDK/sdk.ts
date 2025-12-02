@@ -2,12 +2,21 @@ import { createProviderLogger, BillingLogger } from '../types/logger';
 import { BillingEvent } from '../types/billingEvent';
 import { Providers, ProvidersType } from '../types/providers';
 import { SDKConfig } from '../types/options';
-import { getExecutionMetadata } from '../context/executionContext';
+import { getExecutionMetadata, ExecutionMetadata, withExecutionMetadata } from '../context/executionContext';
+import { HttpRequest } from '../types/httpRequest';
 
 
 // ─────────────────────────────────────────────────────────────
 // Wrap Options (required for every wrap call)
 // ─────────────────────────────────────────────────────────────
+
+export interface CaptureContextOptions {
+    /**
+     * Whether to merge AsyncLocalStorage execution metadata into the event.
+     * Defaults to true when not specified.
+     */
+    includeExecutionMetadata?: boolean;
+}
 
 export interface WrapOptions {
     provider: Providers;
@@ -29,6 +38,20 @@ export interface WrapOptions {
      * without relying on AsyncLocalStorage helpers.
      */
     attributes?: Record<string, string | number | boolean>;
+
+    /**
+     * Optional explicit context to merge into BillingEvent.metadata.
+     *
+     * If provided as a function, it will be lazily evaluated when the
+     * billing event is built. This has higher precedence than context
+     * coming from AsyncLocalStorage.
+     */
+    context?: ExecutionMetadata | (() => ExecutionMetadata);
+
+    /**
+     * Fine-grained control over how context is captured/merged.
+     */
+    captureContext?: CaptureContextOptions;
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -75,7 +98,17 @@ export function createSDK(config: SDKConfig = {}) {
         resource: string,
         duration: number
     ): BillingEvent {
-        const executionMeta = getExecutionMetadata() || {};
+        // Resolve explicit context, if provided
+        const explicitContext: ExecutionMetadata | undefined =
+            typeof options.context === 'function'
+                ? options.context()
+                : options.context;
+
+        const shouldIncludeExecutionMeta =
+            options.captureContext?.includeExecutionMetadata !== false;
+
+        const executionMeta: ExecutionMetadata =
+            (shouldIncludeExecutionMeta ? getExecutionMetadata() : undefined) || {};
 
         const baseMeta = {
             function_name: resource,
@@ -89,6 +122,7 @@ export function createSDK(config: SDKConfig = {}) {
         // core keys like function_name/duration_ms are always present.
         const mergedMetadata = {
             ...executionMeta,
+            ...(explicitContext || {}),
             ...(options.attributes || {}),
             ...baseMeta,
         };
@@ -221,6 +255,23 @@ export function createSDK(config: SDKConfig = {}) {
         getLogger(provider: Providers, service?: string): BillingLogger {
             return getOrCreateLogger(provider, service);
         },
+        
+        extractBillingMetadata(req: HttpRequest): ExecutionMetadata {
+            return {
+              request_id: req.headers['x-request-id'],
+              tenant_id: req.headers['x-tenant-id'] || req.user?.organizationId,
+              user_id: req.user?.id,
+              endpoint: `${req.method} ${req.path}`,
+              http_method: req.method,
+              region: req.ip,
+            };
+          },
+        createHttpMiddleware() {
+            return (req: HttpRequest, next: () => void) => {
+              const metadata = this.extractBillingMetadata(req);
+              withExecutionMetadata(metadata, () => next());
+            };
+          },
     };
 }
 

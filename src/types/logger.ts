@@ -72,6 +72,11 @@ export function createProviderLogger(context: ProviderLoggerContext): BillingLog
                 app: config.appName,
                 provider: context.provider,
                 env: env,
+                // Placeholders estáticos por enquanto.
+                // Quando o middleware de request estiver pronto,
+                // você pode trocar esses valores por endpoint/tenant_id reais.
+                endpoint: '',
+                tenant_id: '',
             },
             json: true,
             basicAuth: `${process.env.LOKI_USER}:${process.env.LOKI_API_KEY}`,
@@ -90,7 +95,7 @@ export function createProviderLogger(context: ProviderLoggerContext): BillingLog
             )
         }));
     }
-
+    
     return winston.createLogger({
         levels: customLevels.levels,
         level: "invoice",

@@ -8,8 +8,7 @@ import { AsyncLocalStorage } from 'node:async_hooks';
  * into BillingEvent.metadata by the SDK.
  */
 
-type ExecutionMetadata = Record<string, any>;
-
+export type ExecutionMetadata = Record<string, any>;
 
 const storage = new AsyncLocalStorage<ExecutionMetadata>();
 

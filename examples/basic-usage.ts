@@ -11,6 +11,8 @@ const sdk: PanopticSDK = createSDK({
 // Example synchronous function to wrap
 function calculateTotal(items: number, pricePerItem: number): number {
     // Simulate some CPU work
+
+    
     let total = 0;
     for (let i = 0; i < items; i++) {
         total += pricePerItem;
