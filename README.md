@@ -118,10 +118,10 @@ const panopticMiddleware = panoptic.createHttpMiddleware({
 
 // Attach to all requests
 app.addHook('onRequest', async (request, reply) => {
-  await panopticMiddleware(request, async () => {
-    // Context is now available for entire request
+    await new Promise<void>((resolve) => {
+      panopticMiddleware(request, resolve);
+    });
   });
-});
 ```
 
 ### 3. Wrap Functions for Tracking
