@@ -65,40 +65,44 @@ export interface BillingLogger extends winston.Logger {
 export function createProviderLogger(context: ProviderLoggerContext): BillingLogger {
     const env = context.env || config.env;
     
-    const transports: winston.transport[] = [
-        new LokiTransport({
-            host: process.env.LOKI_HOST as string,
-            labels: { 
-                app: config.appName,
-                provider: context.provider,
-                env: env,
-                // Placeholders estáticos por enquanto.
-                // Quando o middleware de request estiver pronto,
-                // você pode trocar esses valores por endpoint/tenant_id reais.
-                endpoint: '',
-                tenant_id: '',
-            },
-            json: true,
-            basicAuth: `${process.env.LOKI_USER}:${process.env.LOKI_API_KEY}`,
-            format: winston.format.json(),
-            replaceTimestamp: true,
-            onConnectionError: (err) => console.error(err),
-        })
-    ];
+    const transports: winston.transport[] = [];
+    
+    // Add Loki transport if configured
+    if (config.loki.host && config.loki.basicAuth) {
+        transports.push(
+            new LokiTransport({
+                host: config.loki.host,
+                labels: { 
+                    app: config.appName,
+                    provider: context.provider,
+                    env: env,
+                    projectId: context.projectId || '',
+                    service: context.service || '',
+                },
+                json: true,
+                basicAuth: config.loki.basicAuth,
+                format: winston.format.json(),
+                replaceTimestamp: true,
+                onConnectionError: (err) => console.error('Loki connection error:', err),
+            })
+        );
+    }
 
     // Add console transport in non-production
-    if (config.env !== 'production') {
-        transports.push(new winston.transports.Console({
-            format: winston.format.combine(
-                winston.format.colorize(),
-                winston.format.simple()
-            )
-        }));
+    if (config.logging.console) {
+        transports.push(
+            new winston.transports.Console({
+                format: winston.format.combine(
+                    winston.format.colorize(),
+                    winston.format.simple()
+                )
+            })
+        );
     }
     
     return winston.createLogger({
         levels: customLevels.levels,
-        level: "invoice",
+        level: config.logging.level,
         format: winston.format.combine(
             winston.format.timestamp(),
             winston.format.json()

@@ -1,620 +1,752 @@
-# PanOptic - Implementation Plan
+<div align="center">
+  <img src="./public/logo_panoptic.png" alt="Panoptic Logo" width="200"/>
+  
+  # Panoptic SDK
+  
+  A TypeScript SDK for tracking, billing, and monitoring cloud service usage with automatic context propagation using AsyncLocalStorage.
+  
+  [![npm version](https://img.shields.io/badge/npm-v0.1.0-blue)](https://www.npmjs.com/package/@panoptic/sdk)
+  [![TypeScript](https://img.shields.io/badge/TypeScript-5.0+-blue)](https://www.typescriptlang.org/)
+  [![License](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
+  
+</div>
 
-## Project Overview
-Building a TypeScript SDK that wraps cloud provider functions (starting with GCP) to automatically track and log billing/cost information to MongoDB with dynamic collection routing based on provider and username.
-
----
-
-## Current State
-- ✅ Basic SDK structure with `wrap()` method
-- ✅ Pino logger with custom levels (charge, billing, quota, token_usage, invoice)
-- ✅ MongoDB transport configured
-- ✅ Type definitions for providers, services, and billing events
-- ✅ Support for multiple cloud providers (GCP, AWS, OpenAI, MongoDB Atlas)
-
----
-
-## Critical Requirements Summary
-
-### 1. MongoDB Structure
-- **Database naming:** `panoptic-{env}` (e.g., `panoptic-prod`, `panoptic-dev`)
-- **Collection naming:** `{provider}_{username}` (e.g., `gcp_john_doe`, `aws_acme_corp`)
-- **Indexes:** ts (desc), service, env, compound (ts + service)
-
-### 2. Child Logger Architecture
-- Base logger should NOT be used directly
-- Each provider gets a child logger with automatic context
-- Context includes: provider, username, projectId, env, service
-- Transport routes to correct collection based on context
-
-### 3. Function Name Auto-Capture
-- `wrap()` should automatically extract function name
-- Priority: meta.resource → fn.name → 'anonymous'
-- Stored in `BillingEvent.metadata.function_name` and `resource` field
+## Table of Contents
+- [Overview](#overview)
+- [Installation](#installation)
+- [Configuration](#configuration)
+- [Quick Start](#quick-start)
+- [Core Concepts](#core-concepts)
+- [API Reference](#api-reference)
+- [Advanced Usage](#advanced-usage)
+- [Examples](#examples)
 
 ---
 
-## Week 1: Core Functionality (Child Loggers + MongoDB Routing)
+## Overview
 
-### Task 1.1: Implement Child Logger System
-**File:** `src/types/logger.ts`
+Panoptic automatically tracks function execution and builds billing events with rich context attribution. Using Node.js AsyncLocalStorage, it propagates metadata (tenant, user, plan, etc.) through your entire request chain without manual parameter threading.
 
-**Requirements:**
-- Create base logger (NOT exported for direct use)
-- Export `createProviderLogger(context)` function
-- Add TypeScript type augmentation for custom log methods
-- Add `ProviderLoggerContext` interface
+### Key Features
 
-**Interface:**
-```typescript
-export interface ProviderLoggerContext {
-    provider: Providers;
-    username: string;
-    projectId?: string;
-    env?: string;
-    service?: string;
-}
-
-export function createProviderLogger(context: ProviderLoggerContext): pino.Logger;
-```
-
-**Type Augmentation:**
-```typescript
-declare module 'pino' {
-    interface Logger {
-        charge: pino.LogFn;
-        billing: pino.LogFn;
-        quota: pino.LogFn;
-        token_usage: pino.LogFn;
-        invoice: pino.LogFn;
-    }
-}
-```
+- ✅ **Automatic billing tracking** for wrapped functions
+- ✅ **Context propagation** via AsyncLocalStorage
+- ✅ **HTTP middleware** for request-level attribution
+- ✅ **Detailed timing metrics** (execution time vs overhead)
+- ✅ **Error tracking** with stack traces
+- ✅ **Type-safe** with full TypeScript support
+- ✅ **Framework-agnostic** (works with Fastify, Express, etc.)
 
 ---
 
-### Task 1.2: Update MongoDB Transport with Dynamic Routing
-**File:** `src/types/transporter/mongoDB.ts`
-
-**Requirements:**
-- Implement custom Pino transport using `pino-abstract-transport`
-- Read provider and username from log context
-- Sanitize collection name: `{provider}_{username}` (lowercase, no special chars)
-- Determine database from env: `panoptic-{env}`
-- Create indexes on first write to collection
-- Cache collections to avoid re-creating indexes
-
-**Functions to implement:**
-```typescript
-function sanitizeCollectionName(provider: string, username: string): string;
-function getDatabaseName(env: string): string;
-async function ensureCollection(db: Db, collectionName: string): Promise<Collection>;
-```
-
-**Index requirements:**
-- `{ ts: -1 }` - descending timestamp
-- `{ service: 1 }` - service name
-- `{ env: 1 }` - environment
-- `{ ts: -1, service: 1 }` - compound index
-
-**Error handling:**
-- MongoDB errors should NOT break the application
-- Log errors to stderr
-- Continue execution even if MongoDB is unavailable
-
----
-
-### Task 1.3: Update SDK with Child Logger Management
-**File:** `src/SDK/sdk.ts`
-
-**Requirements:**
-1. **Constructor changes:**
-   - Make `username` required in options
-   - Store `env` from options or `NODE_ENV`
-   - Create SDK-level logger using `createProviderLogger()`
-   - Initialize provider loggers Map
-
-2. **Add `getProviderLogger()` private method:**
-   - Get or create child logger for provider
-   - Cache loggers in Map
-   - Key format: `${provider}-${service}`
-
-3. **Add `createLogger()` public method:**
-   - Allow users to create dedicated loggers
-   - Useful for wrapping multiple functions with same context
-
-4. **Update `wrap()` method:**
-   - Auto-extract function name with priority: `meta.resource` → `fn.name` → `'anonymous'`
-   - Use provided logger OR get/create provider-specific logger
-   - Store function name in both `resource` AND `metadata.function_name`
-   - Log execution start with `logger.billing()`
-   - Construct complete `BillingEvent` on success
-   - Calculate duration in milliseconds
-   - Determine category based on provider (AI vs INFRA)
-   - Log complete event with `logger.invoice(event)`
-   - Handle errors with `logger.error()`
-
-**Function name extraction:**
-```typescript
-const functionName = meta?.resource || fn.name || 'anonymous';
-```
-
-**BillingEvent structure:**
-```typescript
-const event: BillingEvent = {
-    ts: new Date().toISOString(),
-    projectId: self.project,
-    env: self.env,
-    category: /* determine from provider */,
-    provider: /* from meta or USER_DEFINED */,
-    service: meta?.service,
-    resource: functionName,  // ← Function name here
-    quantity: 1,
-    unit: 'execution',
-    amount: 0,
-    currency: 'USD',
-    metadata: {
-        function_name: functionName,  // ← Also in metadata
-        duration_ms: duration,
-        args_types: args.map(a => typeof a),
-        user: meta?.user,
-        requestId: meta?.requestId,
-        tags: meta?.tags,
-    }
-};
-```
-
----
-
-### Task 1.4: Update Type Definitions
-**File:** `src/types/options.ts`
-
-**Requirements:**
-- Make `username` required
-- Add optional `env` field
-
-```typescript
-export interface BillableOptions {
-    apiKey?: string;
-    project?: string;
-    username: string;  // ← REQUIRED
-    env?: 'production' | 'development' | 'staging';
-    autoConnect?: boolean;
-}
-```
-
-**File:** `src/types/meta.ts`
-
-**Requirements:**
-- Add optional `logger` field to allow passing custom logger
-
-```typescript
-export interface BillableMeta {
-    provider?: string;
-    service?: string;
-    resource?: string;  // Optional - will use function name if not provided
-    user?: string;
-    requestId?: string;
-    source?: string;
-    tags?: string[];
-    logger?: pino.Logger;  // ← NEW: allow custom logger
-    [key: string]: any;
-}
-```
-
----
-
-### Task 1.5: Environment Configuration
-**File:** `src/config/env.ts` (NEW)
-
-**Requirements:**
-- Centralize all environment configuration
-- Export config object with defaults
-
-```typescript
-export const config = {
-    env: process.env.NODE_ENV || 'development',
-    mongodb: {
-        uri: process.env.MONGODB_URI || 'mongodb://localhost:27017/',
-        database: `panoptic-${process.env.NODE_ENV || 'dev'}`,
-        user: process.env.MONGODB_USER,
-        password: process.env.MONGODB_PASSWORD,
-    },
-    logging: {
-        level: process.env.PINO_LOG_LEVEL || 'info',
-    }
-};
-```
-
-**File:** `.env.example` (NEW)
+## Installation
 
 ```bash
+npm install @panoptic/sdk
+```
+
+---
+
+## Configuration
+
+### Environment Variables
+
+Create a `.env` file in your project root:
+
+```bash
+# Application Configuration
+APP_NAME=panoptic
 NODE_ENV=development
-MONGODB_URI=mongodb://localhost:27017/
-MONGODB_USER=
-MONGODB_PASSWORD=
-PINO_LOG_LEVEL=info
+
+# Grafana Loki Configuration (required for logging)
+LOKI_HOST=https://your-loki-instance.com
+LOKI_USER=your-username
+LOKI_API_KEY=your-api-key
+
+# Logging Configuration
+WINSTON_LOG_LEVEL=info
+
+# Panoptic SDK Configuration
+PANOPTIC_PROJECT=my-project
+PANOPTIC_ENV=development
+```
+
+### Configuration Options
+
+When creating a Panoptic instance, you can configure:
+
+```typescript
+const panoptic = createPanoptic({
+  project: 'my-app',       // Project identifier (default: from env)
+  env: 'production',       // Environment (default: NODE_ENV)
+});
 ```
 
 ---
 
-### Task 1.6: Create Usage Examples
-**File:** `examples/basic-usage.ts` (NEW)
+## Quick Start
 
-**Requirements:**
-- Show SDK initialization with username
-- Demonstrate function wrapping with auto name capture
-- Show how to create dedicated loggers
-- Include error handling example
+### 1. Create Panoptic Instance
 
 ```typescript
-import { BillableSDK } from '../src/SDK/sdk';
-import { Providers } from '../src/types/providers';
+import { createPanoptic } from '@panoptic/sdk';
+import { Providers } from '@panoptic/sdk';
 
-// Initialize SDK
-const sdk = new BillableSDK({
-    username: 'john_doe',
-    project: 'my-project',
-    env: 'development'
+const panoptic = createPanoptic({
+  project: 'my-project',
+  env: 'production',
+});
+```
+
+### 2. Set Up HTTP Middleware
+
+```typescript
+import fastify from 'fastify';
+
+const app = fastify();
+
+// Create middleware that extracts context from requests
+const panopticMiddleware = panoptic.createHttpMiddleware({
+  extractMetadata: (req) => ({
+    tenant_id: req.headers['x-tenant-id'],
+    user_id: req.user?.id,
+    plan: req.headers['x-plan'],
+    method: req.method,
+    path: req.url,
+  }),
 });
 
-// Example 1: Auto function name capture
-function calculatePrice(items: number, pricePerItem: number): number {
-    return items * pricePerItem;
+// Attach to all requests
+app.addHook('onRequest', async (request, reply) => {
+  await panopticMiddleware(request, async () => {
+    // Context is now available for entire request
+  });
+});
+```
+
+### 3. Wrap Functions for Tracking
+
+```typescript
+// Wrap any async function
+const getUserProfile = panoptic.wrapAsync(
+  async (userId: string) => {
+    // Your business logic
+    return await db.users.findById(userId);
+  },
+  {
+    provider: Providers.POSTGRES,
+    service: 'users_db',
+    resource: 'getUserProfile',
+  }
+);
+
+// Use normally - billing happens automatically
+app.get('/users/:id', async (req, reply) => {
+  const user = await getUserProfile(req.params.id);
+  // Billing event automatically includes:
+  // - tenant_id, user_id, plan (from middleware)
+  // - method, path (from middleware)
+  // - duration_ms, function_name (from wrapper)
+  return user;
+});
+```
+
+---
+
+## Core Concepts
+
+### AsyncLocalStorage Context
+
+Panoptic uses Node.js AsyncLocalStorage to automatically propagate metadata through your async call chain:
+
+```typescript
+// Middleware sets context
+setExecutionMetadata({ tenant_id: 'acme', plan: 'enterprise' });
+
+// Anywhere in the request chain:
+async function deepFunction() {
+  const meta = getExecutionMetadata();
+  console.log(meta.tenant_id); // 'acme' ✅
+}
+```
+
+**Benefits:**
+- No manual parameter passing
+- Works across async boundaries
+- Isolated per-request (concurrent-safe)
+- Framework-agnostic
+
+### Three Storage Functions
+
+| Function | Purpose | When to Use |
+|----------|---------|-------------|
+| `setExecutionMetadata(meta)` | Set context for entire request flow | HTTP middleware |
+| `withExecutionMetadata(meta, fn)` | Set context for specific callback | Isolated operations |
+| `getExecutionMetadata()` | Read current context | Anywhere |
+
+---
+
+## API Reference
+
+### `createPanoptic(config)`
+
+Creates a new Panoptic instance.
+
+```typescript
+interface SDKConfig {
+  project?: string;      // Project identifier
+  env?: string;          // Environment (default: NODE_ENV)
 }
 
-const wrappedCalculate = sdk.wrap(calculatePrice, {
+const panoptic = createPanoptic({
+  project: 'my-app',
+  env: 'production',
+});
+```
+
+---
+
+### `panoptic.wrapAsync(fn, options)`
+
+Wraps an async function for automatic billing tracking.
+
+```typescript
+interface WrapOptions {
+  provider: Providers;              // Required: service provider
+  service?: string;                 // Optional: specific service/model
+  resource?: string;                // Optional: operation name (defaults to fn.name)
+  requestId?: string;               // Optional: request correlation ID
+  tags?: string[];                  // Optional: categorization tags
+  attributes?: Record<string, any>; // Optional: static metadata
+  context?: ExecutionMetadata | (() => ExecutionMetadata); // Optional: dynamic metadata
+  captureContext?: {
+    includeExecutionMetadata?: boolean; // Default: true
+  };
+}
+```
+
+**Example:**
+
+```typescript
+const fetchData = panoptic.wrapAsync(
+  async (id: string) => {
+    return await api.get(`/data/${id}`);
+  },
+  {
+    provider: Providers.EXTERNAL_API,
+    service: 'DataService',
+    resource: 'fetchData',
+    tags: ['read', 'external'],
+  }
+);
+
+await fetchData('123');
+// Logs billing event with execution time and metadata
+```
+
+---
+
+### `panoptic.wrap(fn, options)`
+
+Wraps a synchronous function for billing tracking.
+
+```typescript
+const calculatePrice = panoptic.wrap(
+  (items: number, price: number) => {
+    return items * price;
+  },
+  {
     provider: Providers.USER_DEFINED,
-    service: 'PricingService'
-    // No resource needed - will use 'calculatePrice' automatically
+    resource: 'calculatePrice',
+  }
+);
+
+const total = calculatePrice(10, 5.99);
+```
+
+---
+
+### `panoptic.createHttpMiddleware(options)`
+
+Creates middleware for HTTP framework integration.
+
+```typescript
+interface HttpMiddlewareOptions<Req> {
+  mapRequest?: (req: Req) => HttpRequest;
+  extractMetadata?: (req: HttpRequest) => ExecutionMetadata;
+}
+
+const middleware = panoptic.createHttpMiddleware({
+  extractMetadata: (req) => ({
+    tenant_id: req.headers['x-tenant-id'],
+    user_id: req.user?.id,
+    plan: req.headers['x-plan'],
+    feature: 'api',
+    method: req.method,
+    path: req.url,
+    request_id: req.headers['x-request-id'],
+  }),
+});
+```
+
+---
+
+### `panoptic.getLogger(provider, service?)`
+
+Gets a logger for manual billing events.
+
+```typescript
+const logger = panoptic.getLogger(Providers.OPENAI, 'gpt-4');
+
+logger.billing({
+  msg: 'Chat completion started',
+  model: 'gpt-4',
+  temperature: 0.7,
 });
 
-const total = wrappedCalculate(5, 10);
-// MongoDB will show: resource: 'calculatePrice', metadata.function_name: 'calculatePrice'
+logger.invoice({
+  msg: 'Chat completion finished',
+  prompt_tokens: 100,
+  completion_tokens: 50,
+  total_tokens: 150,
+});
+```
 
-// Example 2: Manual resource name (overrides function name)
-const wrappedWithCustomName = sdk.wrap(calculatePrice, {
+---
+
+## Advanced Usage
+
+### Static Attributes vs Dynamic Context
+
+**Attributes** - Static values set at wrap-time:
+```typescript
+const fn = panoptic.wrapAsync(work, {
+  provider: Providers.AWS,
+  attributes: {
+    feature: 'premium',    // Always the same
+    version: 2,
+    requires_auth: true,
+  }
+});
+```
+
+**Context** - Dynamic values evaluated at call-time:
+```typescript
+const fn = panoptic.wrapAsync(work, {
+  provider: Providers.AWS,
+  context: () => ({
+    timestamp: Date.now(),        // ✅ Different each call
+    server_load: getServerLoad(), // ✅ Current value
+    retry_count: getRetries(),    // ✅ Dynamic
+  })
+});
+```
+
+### Lazy Evaluation Example
+
+```typescript
+let requestCounter = 0;
+
+const trackRequest = panoptic.wrapAsync(
+  async (data: any) => {
+    return await process(data);
+  },
+  {
     provider: Providers.USER_DEFINED,
-    resource: 'custom-pricing-calculation'
-    // Will use 'custom-pricing-calculation' instead of 'calculatePrice'
+    context: () => ({
+      request_number: ++requestCounter,  // Increments each call
+      timestamp: new Date().toISOString(),
+      environment_vars: process.env.FEATURE_FLAGS,
+    })
+  }
+);
+
+await trackRequest(data1); // request_number: 1
+await trackRequest(data2); // request_number: 2
+await trackRequest(data3); // request_number: 3
+```
+
+### Disabling AsyncLocalStorage Context
+
+For background jobs or system operations that shouldn't inherit request context:
+
+```typescript
+// Request context: { tenant_id: 'acme', user_id: 'user-123' }
+
+const systemJob = panoptic.wrapAsync(
+  async () => {
+    // System-level cleanup
+  },
+  {
+    provider: Providers.SYSTEM,
+    captureContext: {
+      includeExecutionMetadata: false  // Ignore AsyncLocalStorage
+    },
+    context: {
+      job_type: 'system_cleanup',
+      scope: 'global',
+    }
+  }
+);
+
+await systemJob();
+// Billing event has ONLY: job_type, scope
+// Not associated with any tenant or user
+```
+
+### Context Precedence
+
+Metadata is merged in this order (later overwrites earlier):
+
+1. **AsyncLocalStorage** (from middleware) - lowest priority
+2. **options.context** - higher priority
+3. **options.attributes** - even higher
+4. **Base metadata** (function_name, duration_ms) - highest priority
+
+```typescript
+// Middleware sets
+setExecutionMetadata({ plan: 'basic', region: 'us-east-1' });
+
+const fn = panoptic.wrapAsync(work, {
+  provider: Providers.AWS,
+  context: { plan: 'premium' },      // Overrides 'basic'
+  attributes: { region: 'eu-west-1' } // Overrides 'us-east-1'
 });
 
-// Example 3: Create dedicated logger
-const gcpLogger = sdk.createLogger(Providers.GOOGLE, 'BigQuery');
+await fn();
+// Final: { plan: 'premium', region: 'eu-west-1' }
+```
 
-function runQuery(sql: string) {
-    // ... query logic
-}
+---
 
-const wrappedQuery = sdk.wrap(runQuery, {
-    provider: Providers.GOOGLE,
-    service: 'BigQuery',
-    logger: gcpLogger
+## Examples
+
+### Complete Fastify Example
+
+```typescript
+import fastify from 'fastify';
+import { createPanoptic } from '@panoptic/sdk';
+import { Providers } from '@panoptic/sdk';
+
+const panoptic = createPanoptic({ project: 'my-api' });
+
+// Create middleware
+const panopticMiddleware = sdk.createHttpMiddleware({
+  extractMetadata: (req) => ({
+    tenant_id: req.headers['x-tenant-id'],
+    user_id: req.user?.id,
+    plan: req.headers['x-plan'],
+    method: req.method,
+    path: req.url,
+    request_id: req.headers['x-request-id'],
+  }),
+});
+
+const app = fastify();
+
+// Attach middleware
+app.addHook('onRequest', async (request, reply) => {
+  await panopticMiddleware(request, async () => {});
+});
+
+// Wrap business logic
+const getItems = panoptic.wrapAsync(
+  async () => {
+    return await db.items.find();
+  },
+  {
+    provider: Providers.POSTGRES,
+    service: 'items_db',
+    resource: 'getItems',
+    tags: ['database', 'read'],
+  }
+);
+
+const createItem = panoptic.wrapAsync(
+  async (data: any) => {
+    return await db.items.create(data);
+  },
+  {
+    provider: Providers.POSTGRES,
+    service: 'items_db',
+    resource: 'createItem',
+    tags: ['database', 'write'],
+  }
+);
+
+// Routes
+app.get('/items', async (req, reply) => {
+  const items = await getItems();
+  return { items };
+});
+
+app.post('/items', async (req, reply) => {
+  const item = await createItem(req.body);
+  return { item };
+});
+
+app.listen({ port: 3000 });
+```
+
+### AI Service Example
+
+```typescript
+import OpenAI from 'openai';
+
+const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+
+const chatCompletion = panoptic.wrapAsync(
+  async (messages: any[], model: string) => {
+    const response = await openai.chat.completions.create({
+      model,
+      messages,
+    });
+    return response;
+  },
+  {
+    provider: Providers.OPENAI,
+    service: 'chat',
+    resource: 'chatCompletion',
+    context: () => ({
+      model: 'gpt-4',
+      timestamp: Date.now(),
+    }),
+  }
+);
+
+// Usage
+const response = await chatCompletion(
+  [{ role: 'user', content: 'Hello!' }],
+  'gpt-4'
+);
+
+// Billing event includes:
+// - provider: OPENAI
+// - service: chat
+// - duration_ms: 1500
+// - tenant_id, user_id (from middleware)
+// - model: 'gpt-4'
+```
+
+### Multi-Provider Example
+
+```typescript
+// Database operation
+const dbQuery = panoptic.wrapAsync(queryFn, {
+  provider: Providers.POSTGRES,
+  service: 'main_db',
+});
+
+// Cache operation
+const cacheGet = panoptic.wrapAsync(getFn, {
+  provider: Providers.REDIS,
+  service: 'session_cache',
+});
+
+// AI operation
+const aiGenerate = panoptic.wrapAsync(generateFn, {
+  provider: Providers.OPENAI,
+  service: 'gpt-4',
+});
+
+// External API
+const fetchExternal = panoptic.wrapAsync(fetchFn, {
+  provider: Providers.EXTERNAL_API,
+  service: 'PaymentGateway',
+});
+
+// All operations are tracked with proper attribution
+app.get('/process', async (req, reply) => {
+  const cached = await cacheGet(req.params.id);
+  if (cached) return cached;
+  
+  const data = await dbQuery(req.params.id);
+  const enhanced = await aiGenerate(data);
+  const payment = await fetchExternal(enhanced);
+  
+  return payment;
+  // All 4 operations logged with tenant_id, user_id, etc.
 });
 ```
 
----
+### Error Tracking Example
 
-## Week 2: GCP Integration
+```typescript
+const riskyOperation = panoptic.wrapAsync(
+  async (data: any) => {
+    if (!data.valid) {
+      throw new Error('Invalid data');
+    }
+    return await process(data);
+  },
+  {
+    provider: Providers.USER_DEFINED,
+    resource: 'riskyOperation',
+  }
+);
 
-### Task 2.1: Install GCP Dependencies
-**Command:**
-```bash
-npm install @google-cloud/bigquery @google-cloud/billing dotenv
-npm install -D @types/node
+try {
+  await riskyOperation({ valid: false });
+} catch (error) {
+  // Error is logged with:
+  // - error message
+  // - stack trace
+  // - error type
+  // - execution duration
+  // - all context metadata
+}
+```
+
+### Timing Breakdown Example
+
+```typescript
+const operation = panoptic.wrapAsync(heavyWork, {
+  provider: Providers.AWS,
+  resource: 'heavyWork',
+});
+
+await operation();
+
+// Billing event includes timing breakdown:
+// {
+//   timing: {
+//     total_ms: 150,       // Total wrapper time
+//     execution_ms: 120,   // Actual function time
+//     overhead_ms: 30      // Metadata capture + logging
+//   }
+// }
 ```
 
 ---
 
-### Task 2.2: Create GCP Billing Connector
-**File:** `src/connectors/gcp/billing.ts` (NEW)
+## Billing Event Structure
 
-**Requirements:**
-- Use `@google-cloud/billing` to fetch real cost data
-- Support authentication via service account or ADC
-- Implement date range queries
-- Return normalized cost data
-
-**Interface:**
-```typescript
-export class GCPBillingConnector {
-    constructor(projectId: string, keyFilePath?: string);
-    async getCosts(startDate: Date, endDate: Date): Promise<CostData[]>;
-}
-
-interface CostData {
-    date: Date;
-    service: string;
-    cost: number;
-    currency: string;
-}
-```
-
----
-
-### Task 2.3: Create GCP Pricing Calculator
-**File:** `src/calculators/gcp/pricing.ts` (NEW)
-
-**Requirements:**
-- Implement pricing calculations for main GCP services
-- All pricing configurable by region
-- Return cost estimates based on usage metrics
-
-**Methods:**
-```typescript
-export class GCPPricingCalculator {
-    calculateBigQueryCost(bytesProcessed: number): number;
-    // $5 per TB processed (on-demand pricing)
-    
-    calculateCloudRunCost(executionTimeMs: number, memoryMB: number, cpuCount: number): number;
-    // CPU: $0.00002400 per vCPU-second
-    // Memory: $0.00000250 per GiB-second
-    
-    calculateCloudStorageCost(storageGB: number, storageClass: string): number;
-    // Standard: $0.020 per GB per month
-    // Nearline: $0.010 per GB per month
-    
-    calculateCloudFunctionsCost(invocations: number, executionTimeMs: number, memoryMB: number): number;
-    // First 2M invocations free
-    // $0.40 per million invocations after
-}
-```
-
----
-
-## Week 3: GCP Service Wrappers
-
-### Task 3.1: Create Base GCP Wrapper
-**File:** `src/wrappers/gcp/base.ts` (NEW)
-
-**Requirements:**
-- Base class for all GCP wrappers
-- Common logging logic
-- Provider/category automatically set
-- Timing and error handling
+Every tracked operation generates a billing event:
 
 ```typescript
-export abstract class BaseGCPWrapper {
-    protected logger: pino.Logger;
-    protected calculator: GCPPricingCalculator;
+interface BillingEvent {
+  ts: string;              // ISO timestamp
+  projectId?: string;      // Project identifier
+  env?: string;            // Environment
+  category: ProvidersType; // AI, INFRA, etc.
+  provider: Providers;     // Specific provider
+  service?: string;        // Service/model name
+  resource: string;        // Operation name
+  metadata: {
+    // From AsyncLocalStorage (middleware)
+    tenant_id?: string;
+    user_id?: string;
+    plan?: string;
+    method?: string;
+    path?: string;
+    request_id?: string;
     
-    constructor(logger: pino.Logger);
+    // From wrapper
+    function_name: string;
+    duration_ms: number;
     
-    protected logExecution(
-        functionName: string,
-        duration: number,
-        metadata: any,
-        cost?: number
-    ): void;
+    // From options.attributes
+    // ... your custom attributes
     
-    protected abstract calculateCost(metadata: any): number;
+    // From options.context
+    // ... your dynamic context
+    
+    // Timing (wrapAsync only)
+    timing?: {
+      total_ms: number;
+      execution_ms: number;
+      overhead_ms: number;
+    };
+  };
 }
 ```
 
 ---
 
-### Task 3.2: Create BigQuery Wrapper
-**File:** `src/wrappers/gcp/bigquery.ts` (NEW)
+## Best Practices
 
-**Requirements:**
-- Wrap `@google-cloud/bigquery` client
-- Intercept `query()` method
-- Extract: bytes_processed, rows_returned, cache_hit
-- Calculate cost using pricing calculator
-- Log complete BillingEvent
-- Return original response unchanged
+### 1. Set Up Middleware Early
+Always attach middleware at the application entry point to ensure context is available everywhere.
 
-**Usage:**
+### 2. Use Descriptive Resource Names
 ```typescript
-import { BigQuery } from '@google-cloud/bigquery';
-import { BigQueryWrapper } from './wrappers/gcp/bigquery';
+// ❌ Not helpful
+const fn = panoptic.wrapAsync(async () => {...}, { provider: Providers.AWS });
 
-const sdk = new BillableSDK({ username: 'john', project: 'my-gcp' });
-const bqLogger = sdk.createLogger(Providers.GOOGLE, 'BigQuery');
-
-const bigquery = new BigQuery();
-const wrapper = new BigQueryWrapper(bqLogger);
-const wrappedBQ = wrapper.wrap(bigquery);
-
-// Use normally - auto-tracked
-const [rows] = await wrappedBQ.query('SELECT * FROM dataset.table');
+// ✅ Clear and searchable
+const fn = panoptic.wrapAsync(async () => {...}, {
+  provider: Providers.AWS,
+  service: 'DynamoDB',
+  resource: 'getUserProfile',
+  tags: ['database', 'read', 'user'],
+});
 ```
 
----
-
-## Week 4: Testing, Documentation, Polish
-
-### Task 4.1: Add Unit Tests
-**File:** `tests/sdk.test.ts` (NEW)
-**File:** `tests/logger.test.ts` (NEW)
-**File:** `tests/transport.test.ts` (NEW)
-
-**Requirements:**
-- Test child logger creation
-- Test function name extraction
-- Test collection name sanitization
-- Test wrap() with various function types
-- Mock MongoDB writes
-
-**Install:**
-```bash
-npm install -D jest ts-jest @types/jest
-```
-
----
-
-### Task 4.2: Update README
-**File:** `README.md`
-
-**Sections:**
-1. Installation
-2. Quick Start
-3. MongoDB Structure Explanation
-4. Environment Variables
-5. Function Name Auto-Capture
-6. Creating Child Loggers
-7. Provider-Specific Examples (GCP, AWS, OpenAI)
-8. API Reference
-
----
-
-### Task 4.3: Create Additional Examples
-**File:** `examples/gcp-bigquery.ts` (NEW)
-**File:** `examples/multi-provider.ts` (NEW)
-**File:** `examples/error-handling.ts` (NEW)
-
----
-
-## Implementation Notes
-
-### Function Name Extraction Priority
-1. **Explicit resource in meta:** `meta.resource` (highest priority)
-2. **Function name:** `fn.name` (JavaScript native property)
-3. **Fallback:** `'anonymous'` (when function has no name)
-
-**Examples:**
+### 3. Leverage Context for Dynamic Values
 ```typescript
-// Case 1: Named function
-function myFunction() {}
-wrap(myFunction) // → resource: 'myFunction'
+// ❌ Static - won't change
+const fn = panoptic.wrapAsync(work, {
+  provider: Providers.AWS,
+  attributes: { timestamp: Date.now() }  // Captured once
+});
 
-// Case 2: Anonymous function
-wrap(() => {}) // → resource: 'anonymous'
-
-// Case 3: Arrow function stored in const
-const myArrow = () => {}
-wrap(myArrow) // → resource: 'myArrow'
-
-// Case 4: Explicit resource (overrides all)
-wrap(myFunction, { resource: 'custom-name' }) // → resource: 'custom-name'
+// ✅ Dynamic - evaluated each call
+const fn = panoptic.wrapAsync(work, {
+  provider: Providers.AWS,
+  context: () => ({ timestamp: Date.now() })
+});
 ```
 
-### MongoDB Collection Sanitization Rules
+### 4. Tag Appropriately
 ```typescript
-// Input: "Google Cloud (GCP)", "John Doe"
-// Output: "google_cloud_gcp_john_doe"
-
-Steps:
-1. Convert to lowercase
-2. Replace non-alphanumeric with underscore
-3. Collapse multiple underscores to single
-4. Trim leading/trailing underscores
+const fn = panoptic.wrapAsync(operation, {
+  provider: Providers.POSTGRES,
+  tags: ['critical', 'write', 'payment', 'user-data'],
+});
 ```
 
-### Error Handling Philosophy
-- **Wrapped functions:** Should throw errors normally (don't suppress)
-- **Logging/MongoDB:** Should NEVER break wrapped function execution
-- **Transport errors:** Log to stderr, continue execution
-- **Missing credentials:** Warn but don't crash
-
-### Performance Considerations
-- Cache child loggers (don't recreate)
-- Use MongoDB connection pooling
-- Async logging (don't block wrapped functions)
-- Consider bulk writes for high-volume scenarios
-
----
-
-## Deliverables Checklist
-
-### Week 1
-- [ ] `src/types/logger.ts` - Child logger system
-- [ ] `src/types/transporter/mongoDB.ts` - Dynamic routing transport
-- [ ] `src/SDK/sdk.ts` - Updated with child logger management
-- [ ] `src/types/options.ts` - Required username
-- [ ] `src/types/meta.ts` - Optional logger field
-- [ ] `src/config/env.ts` - Centralized config
-- [ ] `.env.example` - Environment template
-- [ ] `examples/basic-usage.ts` - Usage examples
-- [ ] Function name auto-capture working
-- [ ] MongoDB collections created dynamically
-- [ ] Indexes created automatically
-
-### Week 2
-- [ ] GCP dependencies installed
-- [ ] `src/connectors/gcp/billing.ts` - Billing API integration
-- [ ] `src/calculators/gcp/pricing.ts` - Cost calculations
-
-### Week 3
-- [ ] `src/wrappers/gcp/base.ts` - Base wrapper class
-- [ ] `src/wrappers/gcp/bigquery.ts` - BigQuery wrapper
-- [ ] Working end-to-end GCP example
-
-### Week 4
-- [ ] Unit tests written
-- [ ] README updated
-- [ ] Multiple examples created
-- [ ] Code documented with JSDoc comments
+### 5. Handle Errors Gracefully
+Wrapped functions automatically log errors, but you should still handle them:
+```typescript
+try {
+  await wrappedOperation();
+} catch (error) {
+  // Error already logged by wrapper
+  // Handle business logic
+  return errorResponse;
+}
+```
 
 ---
 
-## Success Criteria
+## TypeScript Support
 
-✅ SDK can be initialized with username  
-✅ Function names are captured automatically  
-✅ Child loggers route to correct MongoDB collections  
-✅ Collections follow `{provider}_{username}` format  
-✅ Databases follow `panoptic-{env}` format  
-✅ Indexes created automatically  
-✅ GCP BigQuery integration works end-to-end  
-✅ Costs are calculated and logged  
-✅ Errors don't break wrapped functions  
-✅ Documentation is complete and clear  
+Full type safety included:
 
----
+```typescript
+import type { WrapOptions, ExecutionMetadata } from '@panoptic/sdk';
+import { Providers } from '@panoptic/sdk';
 
-## Questions to Address During Implementation
+const options: WrapOptions = {
+  provider: Providers.AWS,
+  service: 'DynamoDB',
+  resource: 'getUser',
+};
 
-1. **Collection creation:** On-demand or upfront?
-   - **Recommendation:** On-demand (when first event is logged)
-
-2. **Event batching:** Individual writes or batched?
-   - **Recommendation:** Individual for simplicity, batching for optimization later
-
-3. **MongoDB unavailable:** Queue in memory, file, or drop?
-   - **Recommendation:** Log to stderr and drop (fail-safe mode)
-
-4. **Cost query API:** Should SDK expose methods to query costs?
-   - **Recommendation:** Yes, add in Week 4 as bonus feature
-
-5. **Multiple environments:** How to handle same username across envs?
-   - **Recommendation:** Database separation handles this (panoptic-prod vs panoptic-dev)
+const meta: ExecutionMetadata = {
+  tenant_id: 'acme',
+  user_id: 'user-123',
+};
+```
 
 ---
 
-## Next Steps After Week 4
+## License
 
-1. **Add more providers:**
-   - AWS wrapper (Lambda, S3, EC2)
-   - OpenAI wrapper (GPT, embeddings, TTS)
-   - MongoDB Atlas wrapper
-
-2. **Advanced features:**
-   - Cost forecasting
-   - Budget alerts
-   - Dashboard/UI for visualizing costs
-   - Export to CSV/Excel
-
-3. **Publishing:**
-   - Publish to npm as `@panoptic/billing-sdk`
-   - Create GitHub repository
-   - Add CI/CD pipeline
-   - Add contribution guidelines
+MIT
 
 ---
 
-## Timeline Summary
+## Contributing
 
-| Week | Focus | Deliverable |
-|------|-------|-------------|
-| 1 | Core + Child Loggers | Working SDK with auto function capture + MongoDB routing |
-| 2 | GCP Integration | Billing API connector + pricing calculator |
-| 3 | GCP Wrappers | BigQuery wrapper + base wrapper class |
-| 4 | Polish | Tests + docs + examples |
-
-**Total:** 4 weeks to production-ready SDK
-
----
-
-*Document created: 2025-01-15*  
-*Last updated: 2025-01-15*
+Contributions welcome! Please open an issue or PR.

@@ -9,7 +9,8 @@ export enum Providers {
     AWS = 'Amazon Web Services (AWS)',
     GOOGLE = 'Google Cloud (GCP)',
     MONGODB = 'MongoDB Atlas',
-    USER_DEFINED = "Custom"
+    USER_DEFINED = "Custom",
+    HTTP_ROUTES = "HTTP Routes",
 }
 
 export enum AwsServices {
@@ -36,6 +37,7 @@ export enum GoogleServices {
     PUBSUB = "Pub/Sub",
     FIRESTORE = "Firestore",
     SPANNER = "Cloud Spanner",
+    API_GATEWAY = "API Gateway",
 }
 
 
@@ -58,8 +60,13 @@ export enum OpenAIServices {
     REASONING = "Reasoning Models",
 }
 
-export enum Undefined {
-
+export enum HttpRoutesServices {
+    GET = "GET",
+    POST = "POST",
+    PUT = "PUT",
+    PATCH = "PATCH",
+    DELETE = "DELETE",
+    OPTIONS = "OPTIONS",
 }
 
 export interface ProviderServicesMap {
@@ -68,4 +75,6 @@ export interface ProviderServicesMap {
     [Providers.MONGODB]: MongoServices;
     [Providers.OPENAI]: OpenAIServices;
     [Providers.USER_DEFINED]: any;
+    [Providers.HTTP_ROUTES]: HttpRoutesServices;
+
 }

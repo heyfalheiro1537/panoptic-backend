@@ -2,7 +2,7 @@ import { createProviderLogger, BillingLogger } from '../types/logger';
 import { BillingEvent } from '../types/billingEvent';
 import { Providers, ProvidersType } from '../types/providers';
 import { SDKConfig } from '../types/options';
-import { getExecutionMetadata, ExecutionMetadata, withExecutionMetadata } from '../context/executionContext';
+import { getExecutionMetadata, ExecutionMetadata, setExecutionMetadata, withExecutionMetadata } from '../context/executionContext';
 import { HttpRequest } from '../types/httpRequest';
 
 
@@ -32,7 +32,7 @@ export interface WrapOptions {
      */
     tags?: string[];
     /**
-     * Optional extra attribution/metadata fields that should be merged
+     * Optional extra static attribution/metadata fields that should be merged
      * into BillingEvent.metadata. This is a convenient escape hatch
      * for callers who want to attach tenant/user/feature information
      * without relying on AsyncLocalStorage helpers.
@@ -41,7 +41,7 @@ export interface WrapOptions {
 
     /**
      * Optional explicit context to merge into BillingEvent.metadata.
-     *
+     * Dynamically merged with AsyncLocalStorage context.
      * If provided as a function, it will be lazily evaluated when the
      * billing event is built. This has higher precedence than context
      * coming from AsyncLocalStorage.
@@ -58,7 +58,7 @@ export interface WrapOptions {
 // SDK Factory
 // ─────────────────────────────────────────────────────────────
 
-export function createSDK(config: SDKConfig = {}) {
+export function createPanoptic(config: SDKConfig = {}) {
     const { project, env = process.env.NODE_ENV || 'development' } = config;
 
     // Internal logger cache (one logger per provider+service combo)
@@ -144,11 +144,49 @@ export function createSDK(config: SDKConfig = {}) {
         };
     }
 
+    /**
+     * Default way of extracting execution metadata from a generic HTTP request.
+     * All fields are optional and only populated when present on the request.
+     */
+    function defaultHttpMetadataExtractor(req: HttpRequest): ExecutionMetadata {
+        const meta: ExecutionMetadata = {};
+
+        const requestId = req.headers['x-request-id'];
+        if (requestId) {
+            meta.request_id = requestId;
+        }
+
+        const tenantId = req.headers['x-tenant-id'] || req.user?.organizationId;
+        if (tenantId) {
+            meta.tenant_id = tenantId;
+        }
+
+        const userId = req.user?.id;
+        if (userId) {
+            meta.user_id = userId;
+        }
+
+        if (req.method && req.path) {
+            meta.endpoint = `${req.method} ${req.path}`;
+        }
+
+        if (req.method) {
+            meta.http_method = req.method;
+        }
+
+        if (req.ip) {
+            meta.region = req.ip;
+        }
+
+        return meta;
+    }
+
     // ─────────────────────────────────────────────────────────
     // Public API
     // ─────────────────────────────────────────────────────────
 
     return {
+        
         /**
          * Wrap a synchronous function for billing tracking
          *
@@ -161,36 +199,44 @@ export function createSDK(config: SDKConfig = {}) {
          */
         wrap<T extends (...args: any[]) => any>(fn: T, options: WrapOptions): T {
             const logger = getOrCreateLogger(options.provider, options.service);
+            const resource = options.resource || fn.name || 'anonymous';
 
             return function (this: any, ...args: Parameters<T>): ReturnType<T> {
-                const resource = options.resource || fn.name || 'anonymous';
                 const start = Date.now();
-                console.log('Executing function', resource);
-                console.log(logger)
-                try {
-                    logger.billing({
-                        msg: 'Execution started',
-                        resource,
-                    });
-                } catch (error) {
-                    console.error('Error logging execution started', error);
-                }
+                
+                // Capture execution metadata at invocation time
+                const invocationMeta = getExecutionMetadata();
+
+                logger.billing({
+                    msg: 'Execution started',
+                    resource,
+                    ...invocationMeta,
+                });
 
                 try {
                     const result = fn.apply(this, args);
                     const duration = Date.now() - start;
                     const event = buildBillingEvent(options, resource, duration);
-                    logger.invoice(event);
-                    console.log('Billing event:', event);
+                    
+                    logger.invoice({
+                        ...event,
+                        msg: 'Execution completed',
+                    });
+                    
                     return result;
                 } catch (error) {
                     const duration = Date.now() - start;
+                    const errorMessage = error instanceof Error ? error.message : String(error);
+                    const errorStack = error instanceof Error ? error.stack : undefined;
+
+                    const event = buildBillingEvent(options, resource, duration);
 
                     logger.error({
+                        ...event,
                         msg: 'Execution failed',
-                        resource,
-                        duration_ms: duration,
-                        error: error instanceof Error ? error.message : String(error),
+                        error: errorMessage,
+                        error_stack: errorStack,
+                        error_type: error instanceof Error ? error.constructor.name : typeof error,
                     });
 
                     throw error;
@@ -199,42 +245,98 @@ export function createSDK(config: SDKConfig = {}) {
         },
 
         /**
-         * Wrap an async function for billing tracking
+         * Wrap an async function for billing tracking with execution context isolation
          *
          * @example
          * const tracked = sdk.wrapAsync(fetchData, {
          *     provider: Providers.AWS,
          *     service: 'DynamoDB',
+         *     resource: 'getUser',
          * });
          * await tracked('user-123'); // Logs billing event automatically
          */
         wrapAsync<T extends (...args: any[]) => Promise<any>>(fn: T, options: WrapOptions): T {
             const logger = getOrCreateLogger(options.provider, options.service);
+            const resource = options.resource || fn.name || 'anonymous';
 
             return async function (this: any, ...args: Parameters<T>): Promise<Awaited<ReturnType<T>>> {
-                const resource = options.resource || fn.name || 'anonymous';
-                const start = Date.now();
+                const timestamps = {
+                    start: Date.now(),
+                    executionStart: 0,
+                    executionEnd: 0,
+                    end: 0,
+                };
+                
+                // Capture execution metadata at invocation time
+                const invocationMeta = getExecutionMetadata();
 
+                // Log execution start with context
                 logger.billing({
                     msg: 'Async execution started',
                     resource,
+                    ...invocationMeta,
                 });
 
                 try {
-                    const result = await fn.apply(this, args);
-                    const duration = Date.now() - start;
-
-                    logger.invoice(buildBillingEvent(options, resource, duration));
+                    // Execute within its own context if context options provided
+                    let result: Awaited<ReturnType<T>>;
+                    
+                    if (options.context || options.attributes) {
+                        // Merge any per-call context
+                        const callContext = {
+                            ...(invocationMeta || {}),
+                            ...(options.attributes || {}),
+                            ...(typeof options.context === 'function' ? options.context() : options.context || {}),
+                        };
+                        
+                        // Execute with merged context
+                        timestamps.executionStart = Date.now();
+                        result = await withExecutionMetadata(callContext, async () => {
+                            return await fn.apply(this, args);
+                        });
+                        timestamps.executionEnd = Date.now();
+                    } else {
+                        // Execute normally, preserving existing context
+                        timestamps.executionStart = Date.now();
+                        result = await fn.apply(this, args);
+                        timestamps.executionEnd = Date.now();
+                    }
+                    
+                    timestamps.end = Date.now();
+                    const duration = timestamps.end - timestamps.start;
+                    const executionTime = timestamps.executionEnd - timestamps.executionStart;
+                    const overhead = duration - executionTime;
+                    
+                    const event = buildBillingEvent(options, resource, duration);
+                    
+                    // Log invoice with full context and timing
+                    logger.invoice({
+                        ...event,
+                        msg: 'Async execution completed',
+                        timing: {
+                            total_ms: duration,
+                            execution_ms: executionTime,
+                            overhead_ms: overhead,
+                        },
+                    });
 
                     return result;
+                    
                 } catch (error) {
-                    const duration = Date.now() - start;
+                    timestamps.end = Date.now();
+                    const duration = timestamps.end - timestamps.start;
+                    const errorMessage = error instanceof Error ? error.message : String(error);
+                    const errorStack = error instanceof Error ? error.stack : undefined;
 
+                    // Build event even for errors to track cost/usage
+                    const event = buildBillingEvent(options, resource, duration);
+                    
                     logger.error({
+                        ...event,
                         msg: 'Async execution failed',
-                        resource,
-                        duration_ms: duration,
-                        error: error instanceof Error ? error.message : String(error),
+                        error: errorMessage,
+                        error_stack: errorStack,
+                        error_type: error instanceof Error ? error.constructor.name : typeof error,
                     });
 
                     throw error;
@@ -256,22 +358,28 @@ export function createSDK(config: SDKConfig = {}) {
             return getOrCreateLogger(provider, service);
         },
         
-        extractBillingMetadata(req: HttpRequest): ExecutionMetadata {
-            return {
-              request_id: req.headers['x-request-id'],
-              tenant_id: req.headers['x-tenant-id'] || req.user?.organizationId,
-              user_id: req.user?.id,
-              endpoint: `${req.method} ${req.path}`,
-              http_method: req.method,
-              region: req.ip,
+        createHttpMiddleware<Req = HttpRequest>(options?: {
+            mapRequest?: (req: Req) => HttpRequest;
+            extractMetadata?: (req: HttpRequest) => ExecutionMetadata;
+        }) {
+            const mapRequest = options?.mapRequest ?? ((req: unknown) => req as HttpRequest);
+            const extractMetadata = options?.extractMetadata ?? defaultHttpMetadataExtractor;
+        
+            return function(req: Req, next: () => void | Promise<void>) {
+                const httpReq = mapRequest(req);
+                const metadata = extractMetadata(httpReq);
+                
+                // Execute next within the metadata context
+                setExecutionMetadata(metadata);
+        
+                const result = next();
+                
+                // If next returns a Promise, return it; otherwise return void
+                if (result instanceof Promise) {
+                    return result;
+                }
             };
-          },
-        createHttpMiddleware() {
-            return (req: HttpRequest, next: () => void) => {
-              const metadata = this.extractBillingMetadata(req);
-              withExecutionMetadata(metadata, () => next());
-            };
-          },
+        }
     };
 }
 
@@ -279,4 +387,4 @@ export function createSDK(config: SDKConfig = {}) {
 // Type exports
 // ─────────────────────────────────────────────────────────────
 
-export type PanopticSDK = ReturnType<typeof createSDK>;
+export type PanopticSDK = ReturnType<typeof createPanoptic>;

@@ -1,79 +1,136 @@
-import { createSDK, PanopticSDK } from '../src/SDK/sdk';
-import { Providers } from '../src/types/providers';
-import { withExecutionMetadata, setExecutionMetadata } from '../src/context/executionContext';
 
-// Basic setup for local testing
-const sdk: PanopticSDK = createSDK({
+import fastify, {
+    FastifyInstance,
+    FastifyReply,
+    FastifyRequest,
+  } from 'fastify';
+  import { createPanoptic } from '../src/SDK/sdk';
+  import { Providers } from '../src/types/providers';
+  import type { HttpRequest } from '../src/types/httpRequest';
+import { getExecutionMetadata } from '../src/context/executionContext';
+  
+  // Create the Panoptic instance
+  const panoptic = createPanoptic({
     project: 'demo-project',
-    env: 'development',
-});
-
-// Example synchronous function to wrap
-function calculateTotal(items: number, pricePerItem: number): number {
-    // Simulate some CPU work
-
-    
-    let total = 0;
-    for (let i = 0; i < items; i++) {
-        total += pricePerItem;
+  });
+  const httpLogger = panoptic.getLogger(Providers.HTTP_ROUTES);
+  
+  // Example wrapped handler to show billing in action
+  const listItems = panoptic.wrapAsync(
+    async () => {
+      // Mock data
+      return [{ id: 1, name: 'Item 1' }];
+    },
+    {
+      provider: Providers.USER_DEFINED,
+      service: 'DemoService',
+      resource: 'listItems',
     }
-    return total;
-}
+  );
+  
+  const app: FastifyInstance = fastify({
+    logger: true,
+  });
+  
+  /**
+   * Panoptic HTTP middleware, adapted to Fastify.
+   * You can customize mapRequest and extractMetadata to control billing params.
+   */
+  const panopticMiddleware = panoptic.createHttpMiddleware<FastifyRequest>({
+    mapRequest: (req): HttpRequest => ({
+      headers: req.headers as Record<string, string | undefined>,
+      method: req.method,
+      path: req.url,
+      ip: req.ip,
+      // If you attach a user somewhere (e.g. via auth), map it here:
+      user: (req as any).user,
+    }),
+    extractMetadata: (req) => ({
+      // Request identification
+      request_id: req.headers['x-request-id'],
+      method: req.method,
+      path: req.path,
+      endpoint: `${req.method} ${req.path}`,
+      tenant_id: req.headers['x-tenant-id'],
+      user_id: req.user?.id,
+      plan: req.headers['x-plan'],
+      feature: 'demo_api',
+    }),
+  });
+  
+// Attach middleware as a Fastify hook (runs for all routes)
+app.addHook('onRequest', async (request, reply) => {
+    await new Promise<void>((resolve) => {
+      panopticMiddleware(request, resolve);
+    });
+  });
 
-// Example async function to wrap
-async function fetchUser(id: string): Promise<{ id: string; name: string }> {
-    // Simulate I/O latency
-    await new Promise((resolve) => setTimeout(resolve, 100));
-    return { id, name: 'Ada Lovelace' };
-}
-
-// Wrap the functions with billing tracking
-const wrappedCalculateTotal = sdk.wrap(calculateTotal, {
-    provider: Providers.USER_DEFINED,
-    service: 'BillingDemo',
-    resource: 'calculate-total',
-    tags: ['example', 'sync'],
-    attributes: {
-        feature: 'basic-usage',
-    },
-});
-
-const wrappedFetchUser = sdk.wrapAsync(fetchUser, {
-    provider: Providers.USER_DEFINED,
-    service: 'BillingDemo',
-    resource: 'fetch-user',
-    tags: ['example', 'async'],
-    attributes: {
-        feature: 'basic-usage',
-    },
-});
-
-async function main() {
-    // Run everything inside an execution metadata context
-    await withExecutionMetadata(
-        {
-            user_id: 'user-123',
-            tenant_id: 'tenant-xyz',
-            request_source: 'example-script',
-        },
-        async () => {
-            // You can also add/override metadata later in the call chain
-            setExecutionMetadata({ feature_flag: 'beta-billing' });
-
-            const total = wrappedCalculateTotal(5, 10);
-            console.log('Sync result (calculateTotal):', total);
-
-            const user = await wrappedFetchUser('user-123');
-            console.log('Async result (fetchUser):', user);
-
-            console.log('Example finished. Check your logger output for billing events.');
-        }
-    );
-}
-
-main().catch((err) => {
-    console.error('Error running basic example:', err);
-    process.exit(1);
-});
-
-
+  // ─────────────────────────────────────────
+  // Routes: GET, POST, PATCH, DELETE
+  // ─────────────────────────────────────────
+  
+  app.get(
+    '/items',
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const items = await listItems();
+      return reply.send({
+        method: 'GET',
+        items,
+      });
+    }
+  );
+  
+  app.post(
+    '/items',
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      // Mock create
+      const body = request.body ?? {};
+      return reply.code(201).send({
+        method: 'POST',
+        created: true,
+        body,
+      });
+    }
+  );
+  
+  app.patch(
+    '/items/:id',
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const { id } = request.params as { id: string };
+      const body = request.body ?? {};
+      return reply.send({
+        method: 'PATCH',
+        id,
+        updated: true,
+        body,
+      });
+    }
+  );
+  
+  app.delete(
+    '/items/:id',
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const { id } = request.params as { id: string };
+      return reply.send({
+        method: 'DELETE',
+        id,
+        deleted: true,
+      });
+    }
+  );
+  
+  // ─────────────────────────────────────────
+  // Server bootstrap
+  // ─────────────────────────────────────────
+  
+  async function start() {
+    try {
+      await app.listen({ port: 3000, host: '0.0.0.0' });
+      console.log('Fastify server listening on http://localhost:3000');
+    } catch (err) {
+      app.log.error(err);
+      process.exit(1);
+    }
+  }
+  
+  void start();
