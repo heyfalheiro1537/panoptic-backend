@@ -1,0 +1,10 @@
+#!/usr/bin/env node
+
+/**
+ * Panoptic Billing CLI
+ * 
+ * Entry point for the panoptic command.
+ */
+
+require('../analytics/cli/index.js');
+

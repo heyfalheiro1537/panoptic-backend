@@ -1,4 +1,26 @@
 {
+  "name": "panoptic-backend",
+  "version": "0.1.0",
+  "description": "Panoptic SDK for billing tracking and cost estimation",
+  "main": "sdk/factory/sdk.js",
+  "types": "sdk/factory/sdk.d.ts",
+  "bin": {
+    "panoptic": "./bin/panoptic"
+  },
+  "scripts": {
+    "dev": "ts-node examples/basic-usage.ts",
+    "billing:generate": "ts-node analytics/cli/index.ts generate",
+    "billing:view": "ts-node analytics/cli/index.ts view",
+    "billing:list": "ts-node analytics/cli/index.ts list",
+    "billing:calibrate": "ts-node analytics/cli/index.ts calibrate",
+    "server": "ts-node analytics/server/start.ts",
+    "server:dev": "nodemon --exec ts-node analytics/server/start.ts",
+    "test": "jest",
+    "test:watch": "jest --watch",
+    "test:coverage": "jest --coverage",
+    "build": "tsc",
+    "lint": "tsc --noEmit"
+  },
   "dependencies": {
     "@miketako3/cloki": "^0.1.16",
     "@sentry/node": "^10.27.0",
@@ -10,11 +32,20 @@
     "winston-transport": "^4.9.0"
   },
   "devDependencies": {
+    "@types/jest": "^29.5.12",
     "@types/node": "^24.9.2",
+    "jest": "^29.7.0",
+    "nodemon": "^3.1.0",
+    "ts-jest": "^29.1.2",
     "ts-node": "^10.9.2",
-    "typescript": "^5.9.3"
+    "typescript": "^5.4.5"
   },
-  "scripts": {
-    "dev": "ts-node examples/basic-usage.ts"
-  }
+  "keywords": [
+    "billing",
+    "cost-tracking",
+    "analytics",
+    "gcp",
+    "observability"
+  ],
+  "license": "MIT"
 }
