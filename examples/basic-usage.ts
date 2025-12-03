@@ -4,10 +4,10 @@ import fastify, {
     FastifyReply,
     FastifyRequest,
   } from 'fastify';
-  import { createPanoptic } from '../src/SDK/sdk';
-  import { Providers } from '../src/types/providers';
-  import type { HttpRequest } from '../src/types/httpRequest';
-import { getExecutionMetadata } from '../src/context/executionContext';
+  import { createPanoptic } from '../sdk/factory/sdk';
+  import { Providers } from '../sdk/types/providers';
+  import type { HttpRequest } from '../sdk/types/httpRequest';
+import { getExecutionMetadata } from '../sdk/context/executionContext';
   
   // Create the Panoptic instance
   const panoptic = createPanoptic({
