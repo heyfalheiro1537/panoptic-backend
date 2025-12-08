@@ -1,51 +1,28 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
+import { PropagatedContext } from '../types/context';
+
+const storage = new AsyncLocalStorage<PropagatedContext>();
 
 /**
- * Generic execution-scoped metadata store built on AsyncLocalStorage.
- *
- * This is intentionally framework-agnostic: any layer (HTTP, queue,
- * cron, etc.) can attach key/value pairs that will later be merged
- * into BillingEvent.metadata by the SDK.
+ * Gets the current propagated context.
  */
-
-export type ExecutionMetadata = Record<string, any>;
-
-const storage = new AsyncLocalStorage<ExecutionMetadata>();
-
-/**
- * Get the current execution metadata, if any.
- */
-
-export function getExecutionMetadata(): ExecutionMetadata | undefined {
-    return storage.getStore();
+export function getExecutionContext(): PropagatedContext | undefined {
+  return storage.getStore();
 }
 
 /**
- * Merge additional metadata into the current execution context.
- *
- * If no context exists yet, this will create one.
+ * Executes a function with propagated context.
+ * Use in HTTP middleware to isolate context per request.
  */
-
-export function setExecutionMetadata(meta: ExecutionMetadata): void {
-    const current = storage.getStore() || {};
-    const merged = { ...current, ...meta };
-    storage.enterWith(merged);
+export function runWithContext<T>(ctx: PropagatedContext, fn: () => T): T {
+  const current = storage.getStore() || {};
+  return storage.run({ ...current, ...ctx }, fn);
 }
 
 /**
- * Run a function within a specific execution metadata context.
- *
- * Any wrapped/async calls inside `fn` will be able to read this metadata
- * via getExecutionMetadata().
+ * Captures the current context to restore later.
+ * Useful for callbacks that lose context (setTimeout, EventEmitter).
  */
-
-export function withExecutionMetadata<T>(
-    meta: ExecutionMetadata,
-    fn: () => T
-): T {
-    const current = storage.getStore() || {};
-    const merged = { ...current, ...meta };
-    return storage.run(merged, fn);
+export function captureContext(): <T>(fn: () => T) => T {
+  return AsyncLocalStorage.snapshot();
 }
-
-
