@@ -2,6 +2,7 @@ import { createProviderLogger, BillingLogger } from '../types/logger';
 import { Providers } from '../types/providers';
 import { SDKConfig, WrapAsyncOptions } from '../types/options';
 import { CostEvent } from '../types/costEvent';
+import { PropagatedContext } from '../types/context';
 import { getExecutionContext, runWithContext } from '../context/executionContext';
 import { HttpRequest } from '../types/httpRequest';
 
@@ -21,6 +22,26 @@ export function createPanoptic(config: SDKConfig = {}) {
       }));
     }
     return loggerCache.get(cacheKey)!;
+  }
+
+  /**
+   * Default way of extracting propagated context from a generic HTTP request.
+   * All fields are optional and only populated when present on the request.
+   */
+  function defaultHttpContextExtractor(req: HttpRequest): PropagatedContext {
+    const ctx: PropagatedContext = {};
+
+    const requestId = req.headers['x-request-id'];
+    if (requestId) {
+      ctx.request_id = requestId;
+    }
+
+    const tenantId = req.headers['x-tenant-id'] || req.user?.organizationId;
+    if (tenantId) {
+      ctx.tenant_id = tenantId;
+    }
+
+    return ctx;
   }
 
   return {
@@ -100,22 +121,42 @@ export function createPanoptic(config: SDKConfig = {}) {
     },
 
     /**
-     * Creates HTTP middleware to propagate tenant_id and request_id.
+     * Creates HTTP middleware to propagate context (tenant_id, request_id).
      * 
      * @example
-     * app.use((req, res, next) => {
-     *   panoptic.httpMiddleware()(req, next);
-     * });
+     * // Basic usage with Express
+     * app.use(panoptic.createHttpMiddleware());
+     * 
+     * // Custom request mapping (e.g., Fastify)
+     * app.use(panoptic.createHttpMiddleware({
+     *   mapRequest: (req) => ({ headers: req.headers, user: req.user }),
+     * }));
+     * 
+     * // Custom context extraction
+     * app.use(panoptic.createHttpMiddleware({
+     *   extractContext: (req) => ({
+     *     tenant_id: req.headers['x-org-id'],
+     *     request_id: req.headers['x-correlation-id'],
+     *   }),
+     * }));
      */
-    httpMiddleware() {
-      return function<T>(req: HttpRequest, next: () => T): T {
-        return runWithContext(
-          {
-            tenant_id: req.headers['x-tenant-id'],
-            request_id: req.headers['x-request-id'],
-          },
-          next
-        );
+    createHttpMiddleware<Req = HttpRequest>(options?: {
+      mapRequest?: (req: Req) => HttpRequest;
+      extractContext?: (req: HttpRequest) => PropagatedContext;
+    }) {
+      const mapRequest = options?.mapRequest ?? ((req: unknown) => req as HttpRequest);
+      const extractContext = options?.extractContext ?? defaultHttpContextExtractor;
+
+      return function(req: Req, res: unknown, next: () => void | Promise<void>) {
+        const httpReq = mapRequest(req);
+        const context = extractContext(httpReq);
+
+        return runWithContext(context, () => {
+          const result = next();
+          if (result instanceof Promise) {
+            return result;
+          }
+        });
       };
     },
 

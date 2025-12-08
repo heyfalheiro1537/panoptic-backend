@@ -1,7 +1,7 @@
-import { createPanoptic, Providers, runWithContext } from '../index';
+import { createPanoptic, Providers } from '../index';
 
 // ─────────────────────────────────────────────────────────────
-// 1. Initialize SDK
+// Initialize SDK
 // ─────────────────────────────────────────────────────────────
 
 const panoptic = createPanoptic({ 
@@ -10,16 +10,7 @@ const panoptic = createPanoptic({
 });
 
 // ─────────────────────────────────────────────────────────────
-// 2. HTTP Middleware - propagates tenant_id and request_id
-// ─────────────────────────────────────────────────────────────
-
-// Express example
-// app.use((req, res, next) => {
-//   panoptic.httpMiddleware()(req, next);
-// });
-
-// ─────────────────────────────────────────────────────────────
-// 3. Database Operations - using context for rate card metrics
+// Database Operations - using context for rate card metrics
 // ─────────────────────────────────────────────────────────────
 
 // Firestore read example
@@ -66,7 +57,7 @@ const saveClient = panoptic.wrapAsync(
 );
 
 // ─────────────────────────────────────────────────────────────
-// 4. AI Operations - tracking token usage
+// AI Operations - tracking token usage
 // ─────────────────────────────────────────────────────────────
 
 const generateSummary = panoptic.wrapAsync(
@@ -100,11 +91,10 @@ const generateSummary = panoptic.wrapAsync(
 );
 
 // ─────────────────────────────────────────────────────────────
-// 5. AWS Lambda / Compute tracking
+// AWS Lambda / Compute tracking
 // ─────────────────────────────────────────────────────────────
 
 async function heavyComputation(jobId: string) {
-  // Simulate heavy work
   await new Promise(resolve => setTimeout(resolve, 100));
 }
 
@@ -137,67 +127,7 @@ const processJob = panoptic.wrapAsync(
 );
 
 // ─────────────────────────────────────────────────────────────
-// 6. Using in route handlers
-// ─────────────────────────────────────────────────────────────
-
-// app.get('/api/clients', async (req, res) => {
-//   // tenant_id and request_id automatically available from middleware
-//   const clients = await fetchClients(req.params.tenantId);
-//   res.json(clients.docs.map(d => d.data()));
-// });
-
-// app.post('/api/summarize', async (req, res) => {
-//   const summary = await generateSummary(req.body.text);
-//   res.json({ summary: summary.choices[0].message.content });
-// });
-
-// ─────────────────────────────────────────────────────────────
-// 7. Manual context propagation (for queues, cron jobs, etc.)
-// ─────────────────────────────────────────────────────────────
-
-interface QueueMessage {
-  tenantId: string;
-  correlationId: string;
-  jobId: string;
-}
-
-async function handleQueueMessage(message: QueueMessage) {
-  // Manually set context for non-HTTP flows
-  await runWithContext(
-    { 
-      tenant_id: message.tenantId, 
-      request_id: message.correlationId 
-    },
-    async () => {
-      await processJob(message.jobId);
-    }
-  );
-}
-
-// ─────────────────────────────────────────────────────────────
-// 8. Custom logging with getLogger
-// ─────────────────────────────────────────────────────────────
-
-const storageLogger = panoptic.getLogger(Providers.AWS, 's3');
-
-async function uploadFile(bucket: string, key: string, data: Buffer) {
-  // await s3.putObject({ Bucket: bucket, Key: key, Body: data });
-  
-  // Manual cost event for operations not easily wrapped
-  storageLogger.invoice({
-    timestamp: new Date().toISOString(),
-    name: 'uploadFile',
-    provider: Providers.AWS,
-    service: 's3',
-    duration_ms: 0,
-    status: 'success',
-    attributes: { bucket, key },
-    context: { bytes: data.length },
-  });
-}
-
-// ─────────────────────────────────────────────────────────────
-// Example: What gets logged (CostEvent structure)
+// Example CostEvent structure (what gets logged)
 // ─────────────────────────────────────────────────────────────
 
 /*
@@ -216,40 +146,9 @@ async function uploadFile(bucket: string, key: string, data: Buffer) {
 }
 */
 
-// ─────────────────────────────────────────────────────────────
-// Demo execution
-// ─────────────────────────────────────────────────────────────
-
-async function demo() {
-  // Simulate a request with context
-  await runWithContext(
-    { tenant_id: 'tenant-123', request_id: 'req-abc-456' },
-    async () => {
-      console.log('Fetching clients...');
-      const clients = await fetchClients('tenant-123');
-      console.log('Clients:', clients);
-
-      console.log('\nGenerating summary...');
-      const summary = await generateSummary('This is a long text to summarize...');
-      console.log('Summary:', summary.choices[0].message.content);
-
-      console.log('\nProcessing job...');
-      const job = await processJob('job-789');
-      console.log('Job result:', job);
-    }
-  );
-}
-
-// Uncomment to run demo
-// demo().catch(console.error);
-
 export { 
   fetchClients, 
   saveClient, 
   generateSummary, 
-  processJob, 
-  handleQueueMessage,
-  uploadFile,
-  demo,
+  processJob,
 };
-
