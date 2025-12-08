@@ -2,9 +2,7 @@ import { createProviderLogger, BillingLogger } from '../types/logger';
 import { Providers } from '../types/providers';
 import { SDKConfig, WrapAsyncOptions } from '../types/options';
 import { CostEvent } from '../types/costEvent';
-import { PropagatedContext } from '../types/context';
-import { getExecutionContext, runWithContext } from '../context/executionContext';
-import { HttpRequest } from '../types/httpRequest';
+import { getExecutionContext } from '../context/executionContext';
 
 export function createPanoptic(config: SDKConfig = {}) {
   const { project, env = process.env.NODE_ENV || 'development' } = config;
@@ -28,21 +26,21 @@ export function createPanoptic(config: SDKConfig = {}) {
    * Default way of extracting propagated context from a generic HTTP request.
    * All fields are optional and only populated when present on the request.
    */
-  function defaultHttpContextExtractor(req: HttpRequest): PropagatedContext {
-    const ctx: PropagatedContext = {};
+//   function defaultHttpContextExtractor(req: HttpRequest): PropagatedContext {
+//     const ctx: PropagatedContext = {};
 
-    const requestId = req.headers['x-request-id'];
-    if (requestId) {
-      ctx.request_id = requestId;
-    }
+//     const requestId = req.headers['x-request-id'];
+//     if (requestId) {
+//       ctx.request_id = requestId;
+//     }
 
-    const tenantId = req.headers['x-tenant-id'] || req.user?.organizationId;
-    if (tenantId) {
-      ctx.tenant_id = tenantId;
-    }
+//     const tenantId = req.headers['x-tenant-id'] || req.user?.organizationId;
+//     if (tenantId) {
+//       ctx.tenant_id = tenantId;
+//     }
 
-    return ctx;
-  }
+//     return ctx;
+//   }
 
   return {
     /**
@@ -140,25 +138,25 @@ export function createPanoptic(config: SDKConfig = {}) {
      *   }),
      * }));
      */
-    createHttpMiddleware<Req = HttpRequest>(options?: {
-      mapRequest?: (req: Req) => HttpRequest;
-      extractContext?: (req: HttpRequest) => PropagatedContext;
-    }) {
-      const mapRequest = options?.mapRequest ?? ((req: unknown) => req as HttpRequest);
-      const extractContext = options?.extractContext ?? defaultHttpContextExtractor;
+    // createHttpMiddleware<Req = HttpRequest>(options?: {
+    //   mapRequest?: (req: Req) => HttpRequest;
+    //   extractContext?: (req: HttpRequest) => PropagatedContext;
+    // }) {
+    //   const mapRequest = options?.mapRequest ?? ((req: unknown) => req as HttpRequest);
+    //   const extractContext = options?.extractContext ?? defaultHttpContextExtractor;
 
-      return function(req: Req, res: unknown, next: () => void | Promise<void>) {
-        const httpReq = mapRequest(req);
-        const context = extractContext(httpReq);
+    //   return function(req: Req, res: unknown, next: () => void | Promise<void>) {
+    //     const httpReq = mapRequest(req);
+    //     const context = extractContext(httpReq);
 
-        return runWithContext(context, () => {
-          const result = next();
-          if (result instanceof Promise) {
-            return result;
-          }
-        });
-      };
-    },
+    //     return runWithContext(context, () => {
+    //       const result = next();
+    //       if (result instanceof Promise) {
+    //         return result;
+    //       }
+    //     });
+    //   };
+    // },
 
     /**
      * Gets logger for custom events.

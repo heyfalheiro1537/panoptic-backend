@@ -3,7 +3,7 @@ import { createPanoptic, Providers } from '../index';
 // ─────────────────────────────────────────────────────────────
 // Initialize SDK
 // ─────────────────────────────────────────────────────────────
-
+console.log('Initializing Panoptic');
 const panoptic = createPanoptic({ 
   project: 'my-saas-app',
   env: 'production' 
@@ -20,7 +20,7 @@ const fetchClients = panoptic.wrapAsync(
     //   .where('tenantId', '==', tenantId)
     //   .get();
     // return snapshot;
-    return { docs: [], size: 0 }; // placeholder
+    return { docs: [1,2,3,4,5,6,7,8,9,10], size: 1200 }; // placeholder
   },
   {
     provider: Providers.GOOGLE,
@@ -152,3 +152,14 @@ export {
   generateSummary, 
   processJob,
 };
+
+(async () => {
+  try {
+    await fetchClients('tenant-123');
+    await saveClient({ id: '123', name: 'John Doe' });
+    await generateSummary('Hello, world!');
+    await processJob('job-123');
+  } catch (error) {
+    console.error(error);
+  }
+})();
